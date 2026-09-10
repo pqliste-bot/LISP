@@ -4,11 +4,17 @@
 ;;; Date         : 2024
 ;;; Description  : Sélectionnez un bloc, puis copiez-le plusieurs fois.
 ;;;                Pour chaque copie : 1. Point d'insertion, 2. Direction.
-;;;                Appuyez sur ÉCHAP pour quitter.
+;;;                Pendant la sélection de la direction, un aperçu
+;;;                transparent du bloc suit le curseur pour visualiser
+;;;                sa position et son orientation finales avant validation.
+;;;                La boucle se répète après chaque copie pour enchaîner
+;;;                plusieurs insertions/orientations d'affilée.
+;;;                Appuyez sur ÉCHAP à tout moment pour quitter.
 ;;; Utilisation  : Tapez **CB** dans AutoCAD.
 ;;; --------------------------------------------------------------------
 
-(defun c:CB (/ *error* doc ss ent entData blkName newPt dirPt dx dy angle)
+(defun c:CB (/ *error* doc ss ent entData blkName sourceObj
+               newPt gr gtype gval dx dy angRad ghost run preview)
 
   ;; --- Chargement des fonctions Visual LISP ---
   (vl-load-com)
@@ -17,7 +23,11 @@
   (setq doc (vla-get-activedocument (vlax-get-acad-object)))
 
   ;; --- Gestionnaire d'erreurs ---
+  ;; Nettoie l'éventuel bloc fantôme en cours de prévisualisation.
   (defun *error* (msg)
+    (if (and ghost (not (vlax-erased-p ghost)))
+      (vl-catch-all-apply 'vla-delete (list ghost))
+    )
     (if (not (wcmatch (strcase msg) "*BREAK* *CANCEL* *EXIT*"))
       (princ (strcat "\n❌ Error: " msg))
     )
@@ -51,29 +61,99 @@
     )
   )
 
+  ;; --- Objet VLISP du bloc source (pour copie + transparence) ---
+  (setq sourceObj (vlax-ename->vla-object ent))
+
   ;; --- Message d'instruction ---
-  (princ "\n✅ Block selected. Now: 1. Click insertion point, 2. Click direction. Press ESC to exit.")
+  (princ "\n✅ Block selected. Repeat: 1. Insertion point, 2. Direction. Press ESC to exit.")
 
-  ;; --- Boucle pour copier plusieurs fois ---
-  (while T
+  ;; --- Boucle principale : se répète après chaque copie ---
+  (setq run T)
+  (while run
     ;; --- Point d'insertion ---
-    (setq newPt (getpoint "\n📍 Insertion point: "))
-    (if (not newPt) (break))  ;; Sortie si ÉCHAP
+    (setq newPt (getpoint "\n📍 Insertion point (ESC to exit): "))
+    (if (not newPt)
+      (setq run nil)  ;; ÉCHAP -> arrêt de la commande
+    )
 
-    ;; --- Direction pour l'orientation ---
-    (setq dirPt (getpoint newPt "\n🎯 Click in the desired direction: "))
-    (if (not dirPt) (break))  ;; Sortie si ÉCHAP
+    (if run
+      (progn
+        ;; --- Création du bloc fantôme (aperçu) ---
+        (setq ghost (vla-Copy sourceObj))
+        (vla-put-InsertionPoint ghost (vlax-3d-point newPt))
+        (vla-put-Rotation ghost 0.0)
+        ;; Transparence 80% pour bien distinguer l'aperçu du bloc final
+        (vl-catch-all-apply 'vla-put-EntityTransparency (list ghost 80))
+        (vla-Update ghost)
 
-    ;; --- Calcul de l'angle ---
-    (setq dx (- (car dirPt) (car newPt)))
-    (setq dy (- (cadr dirPt) (cadr newPt)))
-    (setq angle (/ (* (atan dy dx) 180.0) pi))
+        (princ "\n🎯 Move cursor to set direction, click to confirm (ESC to exit).")
 
-    ;; --- Insertion du bloc ---
-    (command "_.INSERT" blkName newPt "" "" angle)
+        ;; --- Boucle de prévisualisation dynamique (orientation) ---
+        (setq preview T)
+        (setq angRad 0.0)
+        (while preview
+          (setq gr (grread T 1 1))
+          (setq gtype (car gr))
+          (setq gval  (cadr gr))
 
-    ;; --- Message de confirmation ---
-    (princ "\n✅ Block copied! Continue or press ESC to exit.")
+          (cond
+            ;; --- Déplacement de la souris : mise à jour de l'orientation ---
+            ((= gtype 5)
+              (setq dx (- (car gval) (car newPt)))
+              (setq dy (- (cadr gval) (cadr newPt)))
+              (setq angRad (atan dy dx))
+              (vla-put-Rotation ghost angRad)
+              (vla-Update ghost)
+            )
+
+            ;; --- Clic gauche : validation de la direction ---
+            ((= gtype 3)
+              (setq dx (- (car gval) (car newPt)))
+              (setq dy (- (cadr gval) (cadr newPt)))
+              (if (or (/= dx 0.0) (/= dy 0.0))
+                (setq angRad (atan dy dx))
+              )
+              ;; Le bloc fantôme devient la copie finale : transparence retirée
+              (vl-catch-all-apply 'vla-put-EntityTransparency (list ghost "ByLayer"))
+              (vla-Update ghost)
+              (setq ghost nil)
+              (setq preview nil)
+            )
+
+            ;; --- Entrée clavier ---
+            ;;     Entrée/Espace : valide avec l'angle courant
+            ;;     ÉCHAP (chaîne vide) : annule l'aperçu et arrête la commande
+            ((= gtype 2)
+              (cond
+                ((= gval 13)
+                  (vl-catch-all-apply 'vla-put-EntityTransparency (list ghost "ByLayer"))
+                  (vla-Update ghost)
+                  (setq ghost nil)
+                  (setq preview nil)
+                )
+                ((= gval 32)
+                  (vl-catch-all-apply 'vla-put-EntityTransparency (list ghost "ByLayer"))
+                  (vla-Update ghost)
+                  (setq ghost nil)
+                  (setq preview nil)
+                )
+                ((= gval "")
+                  (vl-catch-all-apply 'vla-delete (list ghost))
+                  (setq ghost nil)
+                  (setq preview nil)
+                  (setq run nil)
+                )
+              )
+            )
+          )
+        )
+
+        ;; --- Message de confirmation (uniquement si on continue) ---
+        (if run
+          (princ "\n✅ Block copied! Repeat or press ESC to exit.")
+        )
+      )
+    )
   )
 
   ;; --- Fin de la transaction Undo ---
