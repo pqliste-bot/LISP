@@ -68,9 +68,11 @@
   (setq sourceObj (vlax-ename->vla-object ent))
 
   ;; --- Angle du SCU (UCS) dans le SCG (WCS) ---
-  ;;     Sert à convertir l'angle calculé (en SCU) en angle absolu (SCG)
-  ;;     pour que le bloc soit orienté correctement même si le SCU est tourné.
-  (setq ucsAng (angle '(0.0 0.0 0.0) (trans '(1.0 0.0 0.0) 1 0)))
+  ;;     On convertit le vecteur X du SCU en vecteur SCG en mode déplacement
+  ;;     (disp = T) pour ignorer la translation de l'origine du SCU : seul
+  ;;     l'angle d'inclinaison du SCU est conservé. Ainsi, même si le SCU est
+  ;;     translaté et/ou tourné, l'orientation reste exacte.
+  (setq ucsAng (angle '(0.0 0.0 0.0) (trans '(1.0 0.0 0.0) 1 0 T)))
 
   ;; --- Message d'instruction ---
   (princ "\n✅ Block selected. Repeat: 1. Insertion point, 2. Direction. Press ESC to exit.")
