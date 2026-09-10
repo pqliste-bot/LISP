@@ -1,6 +1,6 @@
 ;;; --------------------------------------------------------------------
 ;;; CB.LSP - Outil de copie multiple de bloc avec orientation dynamique
-;;; Auteur       : Vibe Code (pour pqliste-bot/LISP)
+;;; Auteur       : Vibe Code (pour pqliste-bot/LISP), d'après SMG
 ;;; Date         : 2024
 ;;; Description  : Sélectionnez un bloc, puis copiez-le plusieurs fois.
 ;;;                Pour chaque copie : 1. Point d'insertion, 2. Direction.
@@ -9,12 +9,15 @@
 ;;;                sa position et son orientation finales avant validation.
 ;;;                La boucle se répète après chaque copie pour enchaîner
 ;;;                plusieurs insertions/orientations d'affilée.
+;;;                Compatible avec un SCU (UCS) tourné/modifié : les points
+;;;                sont convertis du SCU vers le SCG (trans) et l'angle est
+;;;                corrigé de la rotation du SCU.
 ;;;                Appuyez sur ÉCHAP à tout moment pour quitter.
 ;;; Utilisation  : Tapez **CB** dans AutoCAD.
 ;;; --------------------------------------------------------------------
 
 (defun c:CB (/ *error* doc ss ent entData blkName sourceObj
-               newPt gr gtype gval dx dy angRad ghost run preview)
+               newPt newPtW gr gtype gval dx dy angRad ucsAng ghost run preview)
 
   ;; --- Chargement des fonctions Visual LISP ---
   (vl-load-com)
@@ -64,13 +67,18 @@
   ;; --- Objet VLISP du bloc source (pour copie + transparence) ---
   (setq sourceObj (vlax-ename->vla-object ent))
 
+  ;; --- Angle du SCU (UCS) dans le SCG (WCS) ---
+  ;;     Sert à convertir l'angle calculé (en SCU) en angle absolu (SCG)
+  ;;     pour que le bloc soit orienté correctement même si le SCU est tourné.
+  (setq ucsAng (angle '(0.0 0.0 0.0) (trans '(1.0 0.0 0.0) 1 0)))
+
   ;; --- Message d'instruction ---
   (princ "\n✅ Block selected. Repeat: 1. Insertion point, 2. Direction. Press ESC to exit.")
 
   ;; --- Boucle principale : se répète après chaque copie ---
   (setq run T)
   (while run
-    ;; --- Point d'insertion ---
+    ;; --- Point d'insertion (getpoint renvoie des coords en SCU) ---
     (setq newPt (getpoint "\n📍 Insertion point (ESC to exit): "))
     (if (not newPt)
       (setq run nil)  ;; ÉCHAP -> arrêt de la commande
@@ -78,10 +86,13 @@
 
     (if run
       (progn
+        ;; --- Conversion du point d'insertion du SCU vers le SCG ---
+        (setq newPtW (trans newPt 1 0))
+
         ;; --- Création du bloc fantôme (aperçu) ---
         (setq ghost (vla-Copy sourceObj))
-        (vla-put-InsertionPoint ghost (vlax-3d-point newPt))
-        (vla-put-Rotation ghost 0.0)
+        (vla-put-InsertionPoint ghost (vlax-3d-point newPtW))
+        (vla-put-Rotation ghost ucsAng)
         ;; Transparence 80% pour bien distinguer l'aperçu du bloc final
         (vl-catch-all-apply 'vla-put-EntityTransparency (list ghost 80))
         (vla-Update ghost)
@@ -102,7 +113,8 @@
               (setq dx (- (car gval) (car newPt)))
               (setq dy (- (cadr gval) (cadr newPt)))
               (setq angRad (atan dy dx))
-              (vla-put-Rotation ghost angRad)
+              ;; Angle absolu (SCG) = angle SCU + rotation du SCU
+              (vla-put-Rotation ghost (+ angRad ucsAng))
               (vla-Update ghost)
             )
 
@@ -114,6 +126,7 @@
                 (setq angRad (atan dy dx))
               )
               ;; Le bloc fantôme devient la copie finale : transparence retirée
+              (vla-put-Rotation ghost (+ angRad ucsAng))
               (vl-catch-all-apply 'vla-put-EntityTransparency (list ghost "ByLayer"))
               (vla-Update ghost)
               (setq ghost nil)
@@ -126,12 +139,14 @@
             ((= gtype 2)
               (cond
                 ((= gval 13)
+                  (vla-put-Rotation ghost (+ angRad ucsAng))
                   (vl-catch-all-apply 'vla-put-EntityTransparency (list ghost "ByLayer"))
                   (vla-Update ghost)
                   (setq ghost nil)
                   (setq preview nil)
                 )
                 ((= gval 32)
+                  (vla-put-Rotation ghost (+ angRad ucsAng))
                   (vl-catch-all-apply 'vla-put-EntityTransparency (list ghost "ByLayer"))
                   (vla-Update ghost)
                   (setq ghost nil)
